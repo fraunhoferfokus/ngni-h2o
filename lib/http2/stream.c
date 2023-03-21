@@ -120,7 +120,7 @@ static void commit_data_header(h2o_http2_conn_t *conn, h2o_http2_stream_t *strea
 {
     assert(outbuf != NULL);
     /* send a DATA frame if there's data or the END_STREAM flag to send */
-    if (length || send_state == H2O_SEND_STATE_FINAL) {
+    if (length && send_state == H2O_SEND_STATE_FINAL) {
         h2o_http2_encode_frame_header(
             (void *)((*outbuf)->bytes + (*outbuf)->size), length, H2O_HTTP2_FRAME_TYPE_DATA,
             (send_state == H2O_SEND_STATE_FINAL && !stream->req.send_server_timing) ? H2O_HTTP2_FRAME_FLAG_END_STREAM : 0,
@@ -304,6 +304,7 @@ static int send_headers(h2o_http2_conn_t *conn, h2o_http2_stream_t *stream)
                                stream->req.res.headers.entries, stream->req.res.headers.size,
                                &conn->super.ctx->globalconf->server_name, stream->req.res.content_length);
     h2o_http2_conn_request_write(conn);
+
     h2o_http2_stream_set_state(conn, stream, H2O_HTTP2_STREAM_STATE_SEND_BODY);
 
     return 0;
