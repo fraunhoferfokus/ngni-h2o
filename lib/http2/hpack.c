@@ -98,11 +98,7 @@ static char *huffdecode4(char *dst, uint8_t in, uint8_t *state, int *maybe_eos, 
     return dst;
 }
 
-const char h2o_hpack_err_missing_mandatory_pseudo_header[] = "missing mandatory pseudo header";
-const char h2o_hpack_err_invalid_pseudo_header[] = "invalid pseudo header";
 const char h2o_hpack_err_found_upper_case_in_header_name[] = "found an upper-case letter in header name";
-const char h2o_hpack_err_unexpected_connection_specific_header[] = "found an unexpected connection-specific header";
-const char h2o_hpack_err_invalid_content_length_header[] = "invalid content-length header";
 const char h2o_hpack_soft_err_found_invalid_char_in_header_name[] = "found an invalid character in header name";
 const char h2o_hpack_soft_err_found_invalid_char_in_header_value[] = "found an invalid character in header value";
 
@@ -126,17 +122,15 @@ size_t h2o_hpack_decode_huffman(char *_dst, unsigned *soft_errors, const uint8_t
 
     /* validate */
     if (is_name) {
-        if (dst == _dst) {
-            *soft_errors |= H2O_HPACK_SOFT_ERROR_BIT_INVALID_NAME;
-        } else {
-            /* pseudo-headers are checked later in `decode_header` */
-            if ((seen_char_types & NGHTTP2_HUFF_INVALID_FOR_HEADER_NAME) != 0 && _dst[0] != ':') {
-                if ((seen_char_types & NGHTTP2_HUFF_UPPER_CASE_CHAR) != 0) {
-                    *err_desc = h2o_hpack_err_found_upper_case_in_header_name;
-                    return SIZE_MAX;
-                } else {
-                    *soft_errors |= H2O_HPACK_SOFT_ERROR_BIT_INVALID_NAME;
-                }
+        if (dst == _dst)
+            return SIZE_MAX;
+        /* pseudo-headers are checked later in `decode_header` */
+        if ((seen_char_types & NGHTTP2_HUFF_INVALID_FOR_HEADER_NAME) != 0 && _dst[0] != ':') {
+            if ((seen_char_types & NGHTTP2_HUFF_UPPER_CASE_CHAR) != 0) {
+                *err_desc = h2o_hpack_err_found_upper_case_in_header_name;
+                return SIZE_MAX;
+            } else {
+                *soft_errors |= H2O_HPACK_SOFT_ERROR_BIT_INVALID_NAME;
             }
         }
     } else {
@@ -166,37 +160,23 @@ int h2o_hpack_validate_header_name(unsigned *soft_errors, const char *s, size_t 
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* 224-255 */
     };
 
-    if (len == 0) {
-        *soft_errors |= H2O_HPACK_SOFT_ERROR_BIT_INVALID_NAME;
-    } else {
-        for (; len != 0; ++s, --len) {
-            unsigned char ch = (unsigned char)*s;
-            if (!valid_h2_header_name_char[ch]) {
-                if (ch - 'A' < 26U) {
-                    *err_desc = h2o_hpack_err_found_upper_case_in_header_name;
-                    return 0;
-                }
-                *soft_errors |= H2O_HPACK_SOFT_ERROR_BIT_INVALID_NAME;
+    for (; len != 0; ++s, --len) {
+        unsigned char ch = (unsigned char)*s;
+        if (!valid_h2_header_name_char[ch]) {
+            if (ch - 'A' < 26U) {
+                *err_desc = h2o_hpack_err_found_upper_case_in_header_name;
+                return 0;
             }
+            *soft_errors |= H2O_HPACK_SOFT_ERROR_BIT_INVALID_NAME;
         }
     }
     return 1;
 }
 
-static int header_value_valid_as_whole(const char *s, size_t len)
-{
-    if (len != 0 && (s[0] == 0x20 || s[0] == 0x09 || s[len - 1] == 0x20 || s[len - 1] == 0x09))
-        return 0;
-    return 1;
-}
-
+/* validate a header value against https://tools.ietf.org/html/rfc7230#section-3.2 */
 void h2o_hpack_validate_header_value(unsigned *soft_errors, const char *s, size_t len)
 {
-    /* surrounding whitespace RFC 9113 8.2.1 */
-    if (!header_value_valid_as_whole(s, len))
-        goto Invalid;
-
-    /* all printable chars + horizontal tab (RFC 7230 3.2) */
+    /* all printable chars + horizontal tab */
     static const char valid_h2_field_value_char[] = {
         0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /*    0-31 */
         1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, /*   32-63 */
@@ -210,13 +190,11 @@ void h2o_hpack_validate_header_value(unsigned *soft_errors, const char *s, size_
 
     for (; len != 0; ++s, --len) {
         unsigned char ch = (unsigned char)*s;
-        if (!valid_h2_field_value_char[ch])
-            goto Invalid;
+        if (!valid_h2_field_value_char[ch]) {
+            *soft_errors |= H2O_HPACK_SOFT_ERROR_BIT_INVALID_VALUE;
+            break;
+        }
     }
-    return;
-
-Invalid:
-    *soft_errors |= H2O_HPACK_SOFT_ERROR_BIT_INVALID_VALUE;
 }
 
 static h2o_iovec_t *decode_string(h2o_mem_pool_t *pool, unsigned *soft_errors, const uint8_t **src, const uint8_t *src_end,
@@ -240,14 +218,12 @@ static h2o_iovec_t *decode_string(h2o_mem_pool_t *pool, unsigned *soft_errors, c
         if ((ret->len = h2o_hpack_decode_huffman(ret->base, soft_errors, *src, len, is_header_name, err_desc)) == SIZE_MAX)
             return NULL;
         ret->base[ret->len] = '\0';
-        if (!is_header_name && !header_value_valid_as_whole(ret->base, ret->len))
-            *soft_errors |= H2O_HPACK_SOFT_ERROR_BIT_INVALID_VALUE;
     } else {
         if (len > src_end - *src)
             return NULL;
         if (is_header_name) {
             /* pseudo-headers are checked later in `decode_header` */
-            if ((len == 0 || **src != (uint8_t)':') && !h2o_hpack_validate_header_name(soft_errors, (char *)*src, len, err_desc))
+            if (**src != (uint8_t)':' && !h2o_hpack_validate_header_name(soft_errors, (char *)*src, len, err_desc))
                 return NULL;
         } else {
             h2o_hpack_validate_header_value(soft_errors, (char *)*src, len);
@@ -528,35 +504,25 @@ int h2o_hpack_parse_request(h2o_mem_pool_t *pool, h2o_hpack_decode_header_cb dec
             if (pseudo_header_exists_map != NULL) {
                 /* FIXME validate the chars in the value (e.g. reject SP in path) */
                 if (name == &H2O_TOKEN_AUTHORITY->buf) {
-                    if (authority->base != NULL) {
-                        *err_desc = h2o_hpack_err_invalid_pseudo_header;
+                    if (authority->base != NULL)
                         return H2O_HTTP2_ERROR_PROTOCOL;
-                    }
                     *authority = value;
                     *pseudo_header_exists_map |= H2O_HPACK_PARSE_HEADERS_AUTHORITY_EXISTS;
                 } else if (name == &H2O_TOKEN_METHOD->buf) {
-                    if (method->base != NULL) {
-                        *err_desc = h2o_hpack_err_invalid_pseudo_header;
+                    if (method->base != NULL)
                         return H2O_HTTP2_ERROR_PROTOCOL;
-                    }
                     *method = value;
                     *pseudo_header_exists_map |= H2O_HPACK_PARSE_HEADERS_METHOD_EXISTS;
                 } else if (name == &H2O_TOKEN_PATH->buf) {
-                    if (path->base != NULL) {
-                        *err_desc = h2o_hpack_err_invalid_pseudo_header;
+                    if (path->base != NULL)
                         return H2O_HTTP2_ERROR_PROTOCOL;
-                    }
-                    if (value.len == 0) {
-                        *err_desc = h2o_hpack_err_invalid_pseudo_header;
+                    if (value.len == 0)
                         return H2O_HTTP2_ERROR_PROTOCOL;
-                    }
                     *path = value;
                     *pseudo_header_exists_map |= H2O_HPACK_PARSE_HEADERS_PATH_EXISTS;
                 } else if (name == &H2O_TOKEN_SCHEME->buf) {
-                    if (*scheme != NULL) {
-                        *err_desc = h2o_hpack_err_invalid_pseudo_header;
+                    if (*scheme != NULL)
                         return H2O_HTTP2_ERROR_PROTOCOL;
-                    }
                     if (h2o_memis(value.base, value.len, H2O_STRLIT("https"))) {
                         *scheme = &H2O_URL_SCHEME_HTTPS;
                     } else if (h2o_memis(value.base, value.len, H2O_STRLIT("masque"))) {
@@ -570,7 +536,6 @@ int h2o_hpack_parse_request(h2o_mem_pool_t *pool, h2o_hpack_decode_header_cb dec
                     return H2O_HTTP2_ERROR_PROTOCOL;
                 }
             } else {
-                *err_desc = h2o_hpack_err_invalid_pseudo_header;
                 return H2O_HTTP2_ERROR_PROTOCOL;
             }
         } else {
@@ -579,10 +544,8 @@ int h2o_hpack_parse_request(h2o_mem_pool_t *pool, h2o_hpack_decode_header_cb dec
                 h2o_token_t *token = H2O_STRUCT_FROM_MEMBER(h2o_token_t, buf, name);
                 if (token->flags.is_hpack_special) {
                     if (token == H2O_TOKEN_CONTENT_LENGTH) {
-                        if ((*content_length = h2o_strtosize(value.base, value.len)) == SIZE_MAX) {
-                            *err_desc = h2o_hpack_err_invalid_content_length_header;
+                        if ((*content_length = h2o_strtosize(value.base, value.len)) == SIZE_MAX)
                             return H2O_HTTP2_ERROR_PROTOCOL;
-                        }
                         goto Next;
                     } else if (token == H2O_TOKEN_HOST) {
                         /* HTTP2 allows the use of host header (in place of :authority) */
@@ -600,7 +563,6 @@ int h2o_hpack_parse_request(h2o_mem_pool_t *pool, h2o_hpack_decode_header_cb dec
                         goto Next;
                     } else {
                         /* rest of the header fields that are marked as special are rejected */
-                        *err_desc = h2o_hpack_err_unexpected_connection_specific_header;
                         return H2O_HTTP2_ERROR_PROTOCOL;
                     }
                 }
@@ -621,16 +583,13 @@ int h2o_hpack_parse_response(h2o_mem_pool_t *pool, h2o_hpack_decode_header_cb de
                              h2o_headers_t *headers, h2o_iovec_t *datagram_flow_id, const uint8_t *src, size_t len,
                              const char **err_desc)
 {
-    if (status != NULL)
-        *status = 0;
+    *status = 0;
 
     const uint8_t *src_end = src + len;
 
     /* the response MUST contain a :status header as the first element */
-    if (status != NULL && src == src_end) {
-        *err_desc = h2o_hpack_err_missing_mandatory_pseudo_header;
+    if (src == src_end)
         return H2O_HTTP2_ERROR_PROTOCOL;
-    }
 
     do {
         h2o_iovec_t *name, value;
@@ -648,30 +607,18 @@ int h2o_hpack_parse_response(h2o_mem_pool_t *pool, h2o_hpack_decode_header_cb de
             }
         }
         if (name->base[0] == ':') {
-            if (status == NULL) {
-                *err_desc = h2o_hpack_err_invalid_pseudo_header;
-                return H2O_HTTP2_ERROR_PROTOCOL; /* Trailers MUST NOT include pseudo-header fields */
-            }
-            if (name != &H2O_TOKEN_STATUS->buf) {
-                *err_desc = h2o_hpack_err_invalid_pseudo_header;
+            if (name != &H2O_TOKEN_STATUS->buf)
                 return H2O_HTTP2_ERROR_PROTOCOL;
-            }
-            if (*status != 0) {
-                *err_desc = h2o_hpack_err_invalid_pseudo_header;
+            if (*status != 0)
                 return H2O_HTTP2_ERROR_PROTOCOL;
-            }
             /* parse status */
-            if (value.len != 3) {
-                *err_desc = h2o_hpack_err_invalid_pseudo_header;
+            if (value.len != 3)
                 return H2O_HTTP2_ERROR_PROTOCOL;
-            }
             char *c = value.base;
 #define PARSE_DIGIT(mul, min_digit)                                                                                                \
     do {                                                                                                                           \
-        if (*c < '0' + (min_digit) || '9' < *c) {                                                                                  \
-            *err_desc = h2o_hpack_err_invalid_pseudo_header;                                                                       \
+        if (*c < '0' + (min_digit) || '9' < *c)                                                                                    \
             return H2O_HTTP2_ERROR_PROTOCOL;                                                                                       \
-        }                                                                                                                          \
         *status += (*c - '0') * mul;                                                                                               \
         ++c;                                                                                                                       \
     } while (0)
@@ -680,22 +627,19 @@ int h2o_hpack_parse_response(h2o_mem_pool_t *pool, h2o_hpack_decode_header_cb de
             PARSE_DIGIT(1, 0);
 #undef PARSE_DIGIT
         } else {
-            if (status != NULL && *status == 0) {
-                *err_desc = h2o_hpack_err_missing_mandatory_pseudo_header;
+            if (*status == 0)
                 return H2O_HTTP2_ERROR_PROTOCOL;
-            }
             if (h2o_iovec_is_token(name)) {
                 h2o_token_t *token = H2O_STRUCT_FROM_MEMBER(h2o_token_t, buf, name);
                 /* reject headers as defined in draft-16 8.1.2.2 */
                 if (token->flags.is_hpack_special) {
-                    if (token == H2O_TOKEN_CONTENT_LENGTH || token == H2O_TOKEN_CACHE_DIGEST || token == H2O_TOKEN_HOST) {
+                    if (token == H2O_TOKEN_CONTENT_LENGTH || token == H2O_TOKEN_CACHE_DIGEST) {
                         /* pass them through when found in response headers (TODO reconsider?) */
                     } else if (token == H2O_TOKEN_DATAGRAM_FLOW_ID) {
                         if (datagram_flow_id != NULL)
                             *datagram_flow_id = value;
                         goto Next;
                     } else {
-                        *err_desc = h2o_hpack_err_unexpected_connection_specific_header;
                         return H2O_HTTP2_ERROR_PROTOCOL;
                     }
                 }
@@ -1087,9 +1031,9 @@ void h2o_hpack_flatten_push_promise(h2o_buffer_t **buf, h2o_hpack_header_table_t
     fixup_frame_headers(buf, start_at, H2O_HTTP2_FRAME_TYPE_PUSH_PROMISE, parent_stream_id, max_frame_size, 0);
 }
 
-size_t h2o_hpack_flatten_response(h2o_buffer_t **buf, h2o_hpack_header_table_t *header_table, uint32_t hpack_capacity,
-                                  uint32_t stream_id, size_t max_frame_size, int status, const h2o_header_t *headers,
-                                  size_t num_headers, const h2o_iovec_t *server_name, size_t content_length)
+void h2o_hpack_flatten_response(h2o_buffer_t **buf, h2o_hpack_header_table_t *header_table, uint32_t hpack_capacity,
+                                uint32_t stream_id, size_t max_frame_size, int status, const h2o_header_t *headers,
+                                size_t num_headers, const h2o_iovec_t *server_name, size_t content_length)
 {
     size_t capacity = calc_headers_capacity(headers, num_headers);
     capacity += H2O_HTTP2_FRAME_HEADER_SIZE; /* for the first header */
@@ -1120,12 +1064,12 @@ size_t h2o_hpack_flatten_response(h2o_buffer_t **buf, h2o_hpack_header_table_t *
     if (content_length != SIZE_MAX)
         dst = encode_content_length(dst, content_length);
     (*buf)->size = (char *)dst - (*buf)->bytes;
-    size_t headers_size = (*buf)->size - start_at - H2O_HTTP2_FRAME_HEADER_SIZE;
 
     /* setup the frame headers */
-    fixup_frame_headers(buf, start_at, H2O_HTTP2_FRAME_TYPE_HEADERS, stream_id, max_frame_size, 0);
-
-    return headers_size;
+    if (start_at != 0)
+        fixup_frame_headers(buf, start_at, H2O_HTTP2_FRAME_TYPE_HEADERS, stream_id, max_frame_size, 0);
+    else
+        fixup_frame_headers(buf, start_at, H2O_HTTP2_FRAME_TYPE_HEADERS, stream_id, max_frame_size, H2O_HTTP2_FRAME_FLAG_END_STREAM);
 }
 
 void h2o_hpack_flatten_trailers(h2o_buffer_t **buf, h2o_hpack_header_table_t *header_table, uint32_t hpack_capacity,
